@@ -1,0 +1,30 @@
+# Virtualenv
+venv/
+.venv/
+
+# Models (large binaries - download separately, see README)
+models/*.onnx
+models/*.bin
+
+# Generated audio
+audio/
+*.wav
+
+# Logs
+logs/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Secrets (none used today, but never commit these)
+.env
+*.key
+*.pem
+credentials*
+secrets*
+
+# macOS
+.DS_Store

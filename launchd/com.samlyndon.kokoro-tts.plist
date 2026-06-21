@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS launchd agent for the Kokoro TTS service.
+
+  Install:
+    cp launchd/com.samlyndon.kokoro-tts.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.samlyndon.kokoro-tts.plist
+
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.samlyndon.kokoro-tts.plist
+
+  Adjust the absolute paths below if you move the project.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.samlyndon.kokoro-tts</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/samlyndon/Projects/Personal/kokoro-tts-service/venv/bin/python</string>
+        <string>/Users/samlyndon/Projects/Personal/kokoro-tts-service/app.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/samlyndon/Projects/Personal/kokoro-tts-service</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>KOKORO_HOST</key>
+        <string>0.0.0.0</string>
+        <key>KOKORO_PORT</key>
+        <string>8182</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/samlyndon/Projects/Personal/kokoro-tts-service/logs/kokoro-tts.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/samlyndon/Projects/Personal/kokoro-tts-service/logs/kokoro-tts-error.log</string>
+</dict>
+</plist>

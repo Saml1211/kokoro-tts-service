@@ -1,0 +1,9 @@
+# Kokoro TTS Service - pinned top-level dependencies
+# Versions match the working venv (Python 3.13). Transitive deps resolve automatically.
+fastapi==0.135.1
+uvicorn==0.41.0
+kokoro-onnx==0.5.0
+onnxruntime==1.24.3
+soundfile==0.13.1
+numpy==2.4.3
+pydantic==2.12.5
