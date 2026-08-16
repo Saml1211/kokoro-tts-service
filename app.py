@@ -11,8 +11,9 @@ import asyncio
 from pathlib import Path
 from contextlib import asynccontextmanager
 
+import numpy as np
 import soundfile as sf
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from kokoro_onnx import Kokoro
@@ -156,6 +157,64 @@ async def generate(req: GenerateRequest):
         "generation_time_s": round(elapsed, 2),
         "sample_rate": sample_rate,
     })
+
+
+@app.post("/api/generate/raw")
+async def generate_raw(req: GenerateRequest):
+    """Synthesise and return PCM16 on the response body.
+
+    /api/generate writes a WAV to disk and returns a URL, so a caller that
+    wants audio pays for a disk write plus a second HTTP round trip before the
+    first sample plays. For a live voice loop that cost is on the critical
+    path. This endpoint keeps the samples in memory and hands them straight
+    back.
+
+    Returns little-endian signed 16-bit mono PCM. Sample rate is on the
+    X-Sample-Rate header, because raw PCM carries no container to hold it.
+    """
+    global kokoro_instance
+    if kokoro_instance is None:
+        raise HTTPException(status_code=503, detail="Model not loaded yet")
+
+    voice = req.voice
+    if voice not in SUPPORTED_VOICES:
+        matches = [v for v in SUPPORTED_VOICES if voice in v]
+        if len(matches) == 1:
+            voice = matches[0]
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown voice '{req.voice}'. Available: {SUPPORTED_VOICES}",
+            )
+
+    t0 = time.time()
+    try:
+        # Synthesis must serialise: the ONNX session is not re-entrant.
+        async with model_lock:
+            samples, sample_rate = await asyncio.to_thread(
+                kokoro_instance.create, req.text, voice=voice, speed=req.speed
+            )
+    except Exception as e:
+        logger.error(f"Raw generation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
+
+    pcm = (np.clip(samples, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
+    elapsed = time.time() - t0
+    logger.info(
+        f"Raw generated {len(samples)/sample_rate:.1f}s audio in {elapsed:.2f}s "
+        f"(rtf {elapsed/(len(samples)/sample_rate):.3f})"
+    )
+    return Response(
+        content=pcm,
+        media_type="audio/pcm",
+        headers={
+            "X-Sample-Rate": str(sample_rate),
+            "X-Duration-S": f"{len(samples)/sample_rate:.3f}",
+            "X-Generation-S": f"{elapsed:.3f}",
+            "X-Channels": "1",
+            "X-Bits": "16",
+        },
+    )
 
 
 @app.get("/audio/{filename}")
