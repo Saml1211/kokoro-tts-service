@@ -56,6 +56,25 @@ kokoro_instance: Kokoro | None = None
 model_lock = asyncio.Lock()
 
 
+def cleanup_audio(keep: int = 100) -> int:
+    """Delete the oldest generated clips beyond the newest `keep`.
+
+    Ran only at startup until 23/08/2026, so the directory grew without
+    bound all day — 113 files against a promised 100, on a volume that was
+    99% full. Now also runs after each generation.
+
+    Returns how many files were removed.
+    """
+    files = sorted(AUDIO_DIR.glob("*.wav"), key=lambda f: f.stat().st_mtime)
+    removed = 0
+    if len(files) > keep:
+        for f in files[:-keep]:
+            f.unlink()
+            removed += 1
+        logger.info(f"Cleaned up {removed} old audio file(s), keeping the newest {keep}")
+    return removed
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load Kokoro model on startup."""
@@ -65,12 +84,7 @@ async def lifespan(app: FastAPI):
     models_dir = Path(__file__).parent / "models"
     kokoro_instance = Kokoro(str(models_dir / "kokoro-v0_19.onnx"), str(models_dir / "voices.bin"))
     logger.info(f"Model loaded in {time.time() - t0:.2f}s")
-    # Cleanup old audio files (keep last 100)
-    files = sorted(AUDIO_DIR.glob("*.wav"), key=lambda f: f.stat().st_mtime)
-    if len(files) > 100:
-        for f in files[:-100]:
-            f.unlink()
-            logger.info(f"Cleaned up old audio: {f.name}")
+    cleanup_audio()
     yield
     logger.info("Shutting down Kokoro TTS service.")
 
@@ -144,6 +158,7 @@ async def generate(req: GenerateRequest):
     filename = f"kokoro_{voice}_{ts}.wav"
     filepath = AUDIO_DIR / filename
     sf.write(str(filepath), samples, sample_rate)
+    removed = await asyncio.to_thread(cleanup_audio)
 
     elapsed = time.time() - t0
     logger.info(f"Generated {filename} in {elapsed:.2f}s ({len(samples)/sample_rate:.1f}s audio)")
