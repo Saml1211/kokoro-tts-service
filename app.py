@@ -27,16 +27,16 @@ AUDIO_DIR.mkdir(exist_ok=True)
 HOST = os.environ.get("KOKORO_HOST", "0.0.0.0")
 PORT = int(os.environ.get("KOKORO_PORT", "8182"))
 
-# Supported voices (Kokoro-82M v0.19+ voice set)
+# Supported voices (Kokoro-82M v0.19 voice set present in voices.bin)
 SUPPORTED_VOICES = [
     # American Female
-    "af_bella", "af_nicole", "af_sky", "af_sarah", "af_heart",
+    "af_bella", "af_nicole", "af_sky", "af_sarah",
     # American Male
     "am_adam", "am_michael",
     # British Female
-    "bf_emma", "bf_isabella", "bf_isabelle",
+    "bf_emma", "bf_isabella",
     # British Male
-    "bm_george", "bm_lewis", "bm_daniel",
+    "bm_george", "bm_lewis",
 ]
 
 # ---------------------------------------------------------------------------
@@ -120,6 +120,12 @@ async def root():
 
 @app.get("/api/voices")
 async def list_voices():
+    global kokoro_instance
+    if kokoro_instance is not None:
+        try:
+            return {"voices": [v for v in kokoro_instance.get_voices() if v != "af"]}
+        except Exception:
+            pass
     return {"voices": SUPPORTED_VOICES}
 
 
