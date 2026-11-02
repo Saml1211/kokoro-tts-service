@@ -2,8 +2,8 @@
 #
 # Smoke test for the Kokoro TTS service.
 # Boots the app on an ALTERNATE port (8183) so it won't disturb any live
-# instance on the default 8182, waits for the model to load, generates one
-# clip, fetches the WAV, and exits non-zero on any failure.
+# instance on the default 8182. Uses disposable audio and owns its listening
+# socket; never calls or kills an existing listener. Generates and fetches a WAV.
 #
 set -euo pipefail
 
@@ -13,34 +13,56 @@ BASE="http://${HOST}:${PORT}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
 PYTHON="${PROJECT_DIR}/venv/bin/python"
-TMP_WAV="$(mktemp /tmp/kokoro_smoke.XXXXXX.wav)"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kokoro_smoke.XXXXXX")"
+TMP_WAV="${TMP_DIR}/clip.wav"
 SERVER_PID=""
 
 cleanup() {
   if [[ -n "${SERVER_PID}" ]]; then
-    # Kill the whole process group (uvicorn may have child processes).
-    kill -- -"${SERVER_PID}" 2>/dev/null || kill "${SERVER_PID}" 2>/dev/null || true
+    # The launcher runs one Uvicorn process, without workers or a reloader.
+    kill "${SERVER_PID}" 2>/dev/null || true
+    # Model inference can delay graceful shutdown; bound cleanup to five seconds.
+    for ((attempt = 0; attempt < 50; attempt++)); do
+      kill -0 "${SERVER_PID}" 2>/dev/null || break
+      sleep 0.1
+    done
+    kill -KILL "${SERVER_PID}" 2>/dev/null || true
     wait "${SERVER_PID}" 2>/dev/null || true
   fi
-  # Belt and braces: kill anything still listening on our test port.
-  if command -v lsof >/dev/null 2>&1; then
-    lsof -ti "tcp:${PORT}" 2>/dev/null | xargs -r kill 2>/dev/null || true
-  fi
-  rm -f "${TMP_WAV}"
+  rm -rf "${TMP_DIR}"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 fail() { echo "SMOKE FAIL: $*" >&2; exit 1; }
 
 [[ -x "${PYTHON}" ]] || fail "venv python not found at ${PYTHON}"
+[[ "${PORT}" =~ ^[0-9]{1,5}$ ]] && (( 10#${PORT} >= 1 && 10#${PORT} <= 65535 )) \
+  || fail "SMOKE_PORT must be between 1 and 65535"
+mkdir "${TMP_DIR}/audio"
 
-echo "Starting server on ${BASE} ..."
-# Run in its own process group (set -m) so cleanup can kill the whole group.
-set -m
-( cd "${PROJECT_DIR}" && exec env KOKORO_HOST="${HOST}" KOKORO_PORT="${PORT}" "${PYTHON}" app.py ) \
-  > /tmp/kokoro_smoke_server.log 2>&1 &
+echo "Starting isolated server on ${BASE} ..."
+(
+  cd "${PROJECT_DIR}"
+  exec "${PYTHON}" - "${PORT}" "${TMP_DIR}/audio" <<'PY'
+import socket
+import sys
+from pathlib import Path
+
+# Reserve the port before importing the app or loading its model. Keeping this
+# socket through startup prevents a check-then-bind race with another service.
+with socket.socket() as listener:
+    listener.bind(("127.0.0.1", int(sys.argv[1])))
+    listener.listen()
+    Path(sys.argv[2]).parent.joinpath("bound").touch()
+    import app
+    import uvicorn
+    app.AUDIO_DIR = Path(sys.argv[2])
+    uvicorn.Server(uvicorn.Config(app.app, log_level="info")).run(sockets=[listener])
+PY
+) > "${TMP_DIR}/server.log" 2>&1 &
 SERVER_PID=$!
-set +m
 
 # Poll /health until model_loaded=true (model load can take a while).
 echo "Waiting for model to load ..."
@@ -48,14 +70,17 @@ DEADLINE=$((SECONDS + 120))
 LOADED=0
 while (( SECONDS < DEADLINE )); do
   if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
-    cat /tmp/kokoro_smoke_server.log >&2 || true
+    cat "${TMP_DIR}/server.log" >&2 || true
     fail "server process died during startup"
   fi
-  HEALTH="$(curl -s --max-time 3 "${BASE}/health" || true)"
-  if echo "${HEALTH}" | grep -q '"model_loaded":true'; then
-    LOADED=1
-    echo "Model loaded: ${HEALTH}"
-    break
+  # Do not probe until our child has claimed the socket, even on startup failure.
+  if [[ -f "${TMP_DIR}/bound" ]]; then
+    HEALTH="$(curl -s --max-time 3 "${BASE}/health" || true)"
+    if echo "${HEALTH}" | grep -q '"model_loaded":true'; then
+      LOADED=1
+      echo "Model loaded: ${HEALTH}"
+      break
+    fi
   fi
   sleep 2
 done

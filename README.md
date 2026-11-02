@@ -105,12 +105,35 @@ curl -s -o out.wav http://127.0.0.1:8182/audio/kokoro_af_bella_1234567890.wav
 
 ## Smoke test
 
-Boots the server on an alternate port (8183, so it won't disturb a running
-instance on 8182), waits for the model, generates one clip, fetches it, and
-cleans up:
+Boots a separate loopback server on port 8183, waits for the existing local
+model, generates one clip, fetches it, and cleans up. Audio, download and logs
+use a private temporary directory: the normal `audio/` retention policy cannot
+remove live clips. The script reserves its socket before model startup, refuses
+an occupied port without making HTTP requests to it, and only terminates its own
+child process. It never restarts the live service.
 
 ```bash
 ./scripts/smoke_test.sh
+# Optional alternate test port (1–65535):
+SMOKE_PORT=8184 ./scripts/smoke_test.sh
+```
+
+The smoke run still loads a separate model and uses CPU/memory; it is not a
+live-service latency or listening-quality check. Exit 0 means a WAV was generated
+and fetched; startup, generation and fetch failures return nonzero. Temporary
+files are removed on normal exit and INT/TERM (not SIGKILL or power loss).
+Cleanup allows its own child five seconds to stop gracefully, then kills that
+child if model inference is blocking shutdown.
+
+Regression checks run the same entry point in disposable repository copies,
+keeping real FastAPI/Uvicorn and WAV handling but substituting synthesis. They
+cover success, occupied-port ownership, invalid ports, model startup failure and
+TERM during a blocking model load:
+
+```bash
+./venv/bin/python -B tests/test_smoke_isolation.py
+# Existing retention check (no model load):
+./venv/bin/python -B -c 'from tests.test_cleanup import test_cleanup_keeps_newest_n; test_cleanup_keeps_newest_n()'
 ```
 
 ## Auto-start on macOS (launchd)
